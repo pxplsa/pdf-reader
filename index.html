@@ -1,1 +1,222 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>PDF Reader Web</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+<style>
+:root {--bg-overlay: rgba(255,255,255,0.88); --highlight: rgba(255,255,0,0.6);}
+html, body {height:100%; margin:0; font-family: 'Times New Roman', serif; background-color:#f2f2f2;}
+body {display:flex; flex-direction:column; align-items:center; padding:18px; box-sizing:border-box; background-size:cover; background-position:center;}
+h1{margin:6px 0 12px;}
+.top-controls{display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:center; margin-bottom:10px;}
+#controls{margin:8px 0; display:flex; gap:8px; flex-wrap:wrap; justify-content:center;}
+button{padding:8px 12px; font-size:15px; border-radius:8px; border:1px solid #888; background:#fff; cursor:pointer;}
+button:active{transform:translateY(1px);}
+#status{margin:8px 0; font-size:14px; color:#333;}
+#text-display{width:86%; max-width:980px; background:var(--bg-overlay); padding:20px; border-radius:10px; box-shadow:0 6px 18px rgba(0,0,0,.08); text-align:left; font-size:14pt; line-height:4.0; max-height:66vh; overflow:auto; -webkit-overflow-scrolling:touch;}
+#text-display span{transition:background .12s}
+.highlight{background:var(--highlight)}
+input[type="text"]{width:300px; padding:6px; border-radius:6px; border:1px solid #888;}
+</style>
+</head>
+<body>
+<h1>PDF Reader Web</h1>
 
+<div class="top-controls">
+  <label>Seleccionar PDF<input type="file" id="pdfInput" accept="application/pdf"></label>
+  <label>Cambiar wallpaper<input id="wallpaperInput" type="file" accept="image/*"></label>
+  <label>Velocidad: <input type="range" id="speedRange" min="0.5" max="2" step="0.05" value="0.9"></label>
+</div>
+
+<div id="controls">
+  <button id="prevBtn">⬅️ Página anterior</button>
+  <button id="readBtn">▶️ Leer</button>
+  <button id="pauseBtn">⏸️ Pausar</button>
+  <button id="resumeBtn">▶️ Reanudar</button>
+  <button id="stopBtn">⏹️ Detener</button>
+  <button id="nextBtn">➡️ Página siguiente</button>
+</div>
+
+<div id="status">Sin PDF cargado</div>
+<div id="text-display">Aquí aparecerá el texto del PDF.</div>
+
+<script>
+const pdfInput = document.getElementById('pdfInput');
+const wallpaperInput = document.getElementById('wallpaperInput');
+const textDisplay = document.getElementById('text-display');
+const status = document.getElementById('status');
+const readBtn = document.getElementById('readBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const resumeBtn = document.getElementById('resumeBtn');
+const stopBtn = document.getElementById('stopBtn');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const speedRange = document.getElementById('speedRange');
+
+let pdfDoc = null, pageNum = 1, sentences = [], currentIndex = 0, utterance = null, isPaused = false, isPlaying = false;
+let db;
+
+// ====== IndexedDB setup ======
+const request = indexedDB.open("PDFReaderDB", 1);
+request.onerror = (e) => console.error("IndexedDB error", e);
+request.onupgradeneeded = (e) => {
+    db = e.target.result;
+    db.createObjectStore("pdfStore");
+    db.createObjectStore("settingsStore");
+};
+request.onsuccess = (e) => {
+    db = e.target.result;
+    restoreState();
+};
+
+// ====== Restore wallpaper, last page, PDF ======
+function restoreState() {
+    const tx = db.transaction("settingsStore", "readonly");
+    const store = tx.objectStore("settingsStore");
+    
+    // Wallpaper
+    store.get("wallpaper").onsuccess = (e) => {
+        const w = e.target.result;
+        if (w) document.body.style.backgroundImage = `url(${w})`;
+    };
+    
+    // Last page
+    store.get("lastPage").onsuccess = (e) => {
+        const p = e.target.result;
+        if (p) pageNum = p;
+    };
+    
+    // PDF
+    const pdfTx = db.transaction("pdfStore", "readonly");
+    const pdfStore = pdfTx.objectStore("pdfStore");
+    pdfStore.get("pdfFile").onsuccess = (e) => {
+        const data = e.target.result;
+        if (data) {
+            const typedarray = new Uint8Array(data);
+            pdfjsLib.getDocument(typedarray).promise.then(pdf=>{
+                pdfDoc = pdf;
+                loadPage(pageNum);
+            }).catch(err => console.error(err));
+        }
+    };
+}
+
+// ====== Wallpaper change ======
+wallpaperInput.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+        document.body.style.backgroundImage = `url('${reader.result}')`;
+        const tx = db.transaction("settingsStore", "readwrite");
+        tx.objectStore("settingsStore").put(reader.result, "wallpaper");
+    };
+    reader.readAsDataURL(f);
+});
+
+// ====== Split text into sentences ======
+function splitIntoSentences(text){
+    const raw=text.replace(/\s+/g,' ').trim();
+    if(!raw) return [];
+    const parts=raw.match(/[^.!?]+[.!?]?/g)||[raw];
+    return parts.map(s=>s.trim()).filter(Boolean);
+}
+
+// ====== Load PDF page ======
+function loadPage(num){
+    if(!pdfDoc) return;
+    pdfDoc.getPage(num).then(page=>page.getTextContent()).then(tc=>{
+        const text = tc.items.map(i=>i.str).join(' ');
+        sentences = splitIntoSentences(text);
+        currentIndex = 0;
+        renderSentences();
+        status.textContent = `Página ${num} de ${pdfDoc.numPages}`;
+        
+        // Guardar página en IndexedDB
+        const tx = db.transaction("settingsStore", "readwrite");
+        tx.objectStore("settingsStore").put(num, "lastPage");
+    }).catch(err => { console.error(err); alert('Error al leer la página del PDF.') });
+}
+
+// ====== Render sentences ======
+function renderSentences(){
+    textDisplay.innerHTML = '';
+    sentences.forEach((s, idx) => {
+        const span = document.createElement('span');
+        span.textContent = s + (/[\.\!\?]$/.test(s)?' ':'');
+        span.dataset.idx = idx;
+        textDisplay.appendChild(span);
+    });
+    scrollToSentence(currentIndex);
+}
+function scrollToSentence(i){
+    const el = textDisplay.querySelector(`span[data-idx="${i}"]`);
+    if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
+}
+
+// ====== Speech synthesis ======
+function speakCurrent(){
+    if(!sentences.length) return;
+    if(currentIndex >= sentences.length){ isPlaying=false; return; }
+    const text = sentences[currentIndex];
+    Array.from(textDisplay.children).forEach(c=>c.classList.remove('highlight'));
+    const el = textDisplay.querySelector(`span[data-idx="${currentIndex}"]`);
+    if(el) el.classList.add('highlight');
+    utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'es-ES';
+    utterance.rate = parseFloat(speedRange.value);
+    utterance.pitch = 1.0;
+    utterance.onend = () => { currentIndex++; speakCurrent(); };
+    isPlaying = true;
+    speechSynthesis.speak(utterance);
+}
+
+// ====== Controls ======
+readBtn.addEventListener('click',()=>{
+    if(!pdfDoc){alert('Selecciona un PDF primero'); return;}
+    if(isPlaying&&!isPaused){alert('Ya se está reproduciendo'); return;}
+    if(isPaused && utterance){speechSynthesis.resume(); isPaused=false; return;}
+    isPaused=false;
+    speakCurrent();
+});
+pauseBtn.addEventListener('click',()=>{if(!isPlaying)return; speechSynthesis.pause(); isPaused=true;});
+resumeBtn.addEventListener('click',()=>{if(!isPlaying)return; speechSynthesis.resume(); isPaused=false;});
+stopBtn.addEventListener('click',()=>{
+    speechSynthesis.cancel(); isPaused=false; isPlaying=false;
+    Array.from(textDisplay.children).forEach(c=>c.classList.remove('highlight'));
+    currentIndex=0;
+});
+prevBtn.addEventListener('click',()=>{
+    if(!pdfDoc) return;
+    if(pageNum <= 1) return;
+    pageNum--; speechSynthesis.cancel(); isPlaying=false; isPaused=false; loadPage(pageNum);
+});
+nextBtn.addEventListener('click',()=>{
+    if(!pdfDoc) return;
+    if(pageNum >= pdfDoc.numPages) return;
+    pageNum++; speechSynthesis.cancel(); isPlaying=false; isPaused=false; loadPage(pageNum);
+});
+
+// ====== Load PDF from input and save in IndexedDB ======
+pdfInput.addEventListener('change', e=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = function(){
+        const typedarray = new Uint8Array(this.result);
+        const tx = db.transaction("pdfStore", "readwrite");
+        tx.objectStore("pdfStore").put(typedarray, "pdfFile"); // Guardar PDF
+        pdfjsLib.getDocument(typedarray).promise.then(pdf=>{
+            pdfDoc = pdf;
+            pageNum = 1;
+            loadPage(pageNum);
+        }).catch(err=>{console.error(err); alert('No se pudo cargar el PDF.')});
+    };
+    reader.readAsArrayBuffer(file);
+});
+</script>
+
+</body>
+</html>
