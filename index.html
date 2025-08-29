@@ -2,14 +2,43 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>Lector PDF Profesional</title>
+  <title>Lector PDF Mejorado</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
-    body {margin:0; background:url("assets/fondo.jpg") no-repeat center center fixed; background-size:cover; font-family:sans-serif; color:white;}
-    #controls {padding:10px; background:rgba(0,0,0,0.7); position:sticky; top:0; z-index:10; text-align:center;}
-    select, button, input[type=range]{margin:5px; padding:8px 12px; border-radius:8px; border:none; cursor:pointer;}
-    #pdf-text{padding:20px; line-height:1.6; background:rgba(0,0,0,0.5); min-height:60vh; position:relative;}
-    #progressBar{height:6px; background:yellow; width:0%; position:absolute; bottom:0; left:0;}
+    body {
+      margin: 0;
+      background: url("assets/fondo.jpg") no-repeat center center fixed;
+      background-size: cover;
+      font-family: sans-serif;
+      color: white;
+    }
+    #controls {
+      padding: 10px;
+      background: rgba(0,0,0,0.7);
+      text-align: center;
+    }
+    select, button, input[type=range] {
+      margin: 5px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+    }
+    #pdf-text {
+      padding: 20px;
+      line-height: 1.6;
+      background: rgba(0,0,0,0.5);
+      min-height: 60vh;
+      position: relative;
+    }
+    #progressBar {
+      height: 6px;
+      background: yellow;
+      width: 0%;
+      position: absolute;
+      bottom: 0;
+      left: 0;
+    }
   </style>
 </head>
 <body>
@@ -25,22 +54,129 @@
     <select id="voiceSelect"></select>
   </div>
 
-  <div id="pdf-text"><div id="progressBar"></div></div>
+  <div id="pdf-text">
+    <div id="progressBar"></div>
+  </div>
 
   <script>
-    const url="assets/tu-archivo.pdf"; let pdfDoc=null,pageNum=parseInt(localStorage.getItem("lastPage"))||1; let voices=[],synth=window.speechSynthesis; let voiceSelect=document.getElementById("voiceSelect"); let textoPagina=""; let progreso=0; let continuo=false; let utterance=null; let progressInterval=null;
-    function loadVoices(){voices=synth.getVoices(); voiceSelect.innerHTML=""; voices.forEach((v,i)=>{let opt=document.createElement("option"); opt.value=i; opt.textContent=`${v.name} (${v.lang})`; if(v.default) opt.textContent+=" — [default]"; voiceSelect.appendChild(opt);});}
-    loadVoices(); if(speechSynthesis.onvoiceschanged!==undefined){speechSynthesis.onvoiceschanged=loadVoices;}
-    async function renderPage(num){const page=await pdfDoc.getPage(num); const textContent=await page.getTextContent(); textoPagina=textContent.items.map(i=>i.str).join(" "); document.getElementById("pdf-text").innerText=textoPagina; document.getElementById("pageNum").textContent=num; localStorage.setItem("lastPage",num); document.getElementById("progress").value=0; updateProgressBar();}
-    function prevPage(){if(pageNum<=1)return; pageNum--; renderPage(pageNum);} function nextPage(){if(pageNum>=pdfDoc.numPages)return; pageNum++; renderPage(pageNum);}
-    function moverProgreso(value){progreso=value; leerDesdeProgreso();}
-    function leerDesdeProgreso(){detener(); if(!textoPagina.trim())return; let start=Math.floor((progreso/100)*textoPagina.length); let textoDesde=textoPagina.slice(start); if(!textoDesde)return; utterance=new SpeechSynthesisUtterance(textoDesde); let selectedVoice=voices[voiceSelect.value]; if(selectedVoice)utterance.voice=selectedVoice; utterance.lang="es-ES"; utterance.rate=1; utterance.onend=function(){stopProgressAnimation(); if(continuo && pageNum<pdfDoc.numPages){ pageNum++; renderPage(pageNum).then(()=>{progreso=0; leerDesdeProgreso();});}}; synth.speak(utterance); startProgressAnimation();}
-    function detener(){if(synth.speaking)synth.cancel(); stopProgressAnimation();}
-    function toggleContinuo(){continuo=!continuo; document.getElementById("btnContinuo").textContent=continuo?"⏸️ Modo continuo: ON":"▶️ Modo continuo: OFF";}
-    function startProgressAnimation(){stopProgressAnimation(); const totalLength=textoPagina.length; progressInterval=setInterval(()=>{if(!utterance)return; progreso+=(100/totalLength)*0.5; if(progreso>100)progreso=100; document.getElementById("progress").value=progreso; updateProgressBar();},100);}
-    function stopProgressAnimation(){if(progressInterval)clearInterval(progressInterval);}
-    function updateProgressBar(){document.getElementById("progressBar").style.width=progreso+"%";}
-    pdfjsLib.getDocument(url).promise.then(function(pdf){pdfDoc=pdf; document.getElementById("pageCount").textContent=pdf.numPages; renderPage(pageNum);});
+    const url = "assets/tu-archivo.pdf";
+    let pdfDoc = null, pageNum = parseInt(localStorage.getItem("lastPage")) || 1;
+    let voices = [], synth = window.speechSynthesis;
+    let voiceSelect = document.getElementById("voiceSelect");
+    let textoPagina = "";
+    let progreso = 0;
+    let continuo = false;
+    let utterance = null;
+    let progressInterval = null;
+
+    // ===== Cargar voces =====
+    function loadVoices() {
+      voices = synth.getVoices();
+      voiceSelect.innerHTML = "";
+      voices.forEach((v, i) => {
+        let opt = document.createElement("option");
+        opt.value = i;
+        opt.textContent = `${v.name} (${v.lang})`;
+        if (v.default) opt.textContent += " — [default]";
+        voiceSelect.appendChild(opt);
+      });
+    }
+    loadVoices();
+    if (speechSynthesis.onvoiceschanged !== undefined) {
+      speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    // ===== Renderizar página =====
+    async function renderPage(num) {
+      const page = await pdfDoc.getPage(num);
+      const textContent = await page.getTextContent();
+      textoPagina = textContent.items.map(i => i.str).join(" ");
+      document.getElementById("pdf-text").innerText = textoPagina;
+      document.getElementById("pageNum").textContent = num;
+      localStorage.setItem("lastPage", num);
+      document.getElementById("progress").value = 0;
+      updateProgressBar();
+    }
+
+    function prevPage() {
+      if (pageNum <= 1) return;
+      pageNum--;
+      renderPage(pageNum);
+    }
+    function nextPage() {
+      if (pageNum >= pdfDoc.numPages) return;
+      pageNum++;
+      renderPage(pageNum);
+    }
+
+    function moverProgreso(value) {
+      progreso = value;
+      leerDesdeProgreso();
+    }
+
+    function leerDesdeProgreso() {
+      detener();
+      if (!textoPagina.trim()) return;
+      let start = Math.floor((progreso/100) * textoPagina.length);
+      let textoDesde = textoPagina.slice(start);
+      if (!textoDesde) return;
+
+      utterance = new SpeechSynthesisUtterance(textoDesde);
+      let selectedVoice = voices[voiceSelect.value];
+      if (selectedVoice) utterance.voice = selectedVoice;
+      utterance.lang = "es-ES";
+      utterance.rate = 1;
+
+      utterance.onend = function() {
+        stopProgressAnimation();
+        if (continuo && pageNum < pdfDoc.numPages) {
+          pageNum++;
+          renderPage(pageNum).then(() => {
+            progreso = 0;
+            leerDesdeProgreso();
+          });
+        }
+      };
+
+      synth.speak(utterance);
+      startProgressAnimation();
+    }
+
+    function detener() {
+      if (synth.speaking) synth.cancel();
+      stopProgressAnimation();
+    }
+
+    function toggleContinuo() {
+      continuo = !continuo;
+      document.getElementById("btnContinuo").textContent = continuo ? "⏸️ Modo continuo: ON" : "▶️ Modo continuo: OFF";
+    }
+
+    function startProgressAnimation() {
+      stopProgressAnimation();
+      const totalLength = textoPagina.length;
+      progressInterval = setInterval(() => {
+        if (!utterance) return;
+        progreso += (100 / totalLength) * 0.5;
+        if (progreso > 100) progreso = 100;
+        document.getElementById("progress").value = progreso;
+        updateProgressBar();
+      }, 100);
+    }
+
+    function stopProgressAnimation() {
+      if (progressInterval) clearInterval(progressInterval);
+    }
+
+    function updateProgressBar() {
+      document.getElementById("progressBar").style.width = progreso + "%";
+    }
+
+    pdfjsLib.getDocument(url).promise.then(function(pdf) {
+      pdfDoc = pdf;
+      document.getElementById("pageCount").textContent = pdf.numPages;
+      renderPage(pageNum);
+    });
   </script>
 </body>
 </html>
